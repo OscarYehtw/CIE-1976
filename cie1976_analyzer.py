@@ -1,14 +1,17 @@
+import os
 import tkinter as tk
 from tkinter import filedialog
 import pandas as pd
 import colour
 from colour.plotting import colour_style
 import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse, PathPatch
+from matplotlib.legend_handler import HandlerPatch
+from matplotlib.patches import Ellipse, Patch, PathPatch
 import mpld3
 from mpld3 import plugins
 import numpy as np
 from matplotlib.path import Path
+from matplotlib.lines import Line2D
 
 class TickStylePlugin(plugins.PluginBase):
     JAVASCRIPT = """
@@ -181,16 +184,84 @@ def extract_ellipses(df):
 
 ellipses = extract_ellipses(df)
 
+# === Reading CSV ===
+#csv_path = "r-255_g-0_b-0_L-1to255period10.csv"
+#csv_path = "r-0_g-255_b-0_L-1to255period10.csv"
+csv_path = "r-0_g-0_b-255_L-1to255period10.csv"
+df = pd.read_csv(csv_path)
+
+# Specific columns for u′ and v′
+u_values = df["u`"].values
+v_values = df["v`"].values
+
 # === Step 4: Plot base CIE1976 diagram ===
 colour_style()
 fig, ax = plt.subplots(figsize=(8, 6))
 colour.plotting.plot_chromaticity_diagram_CIE1976UCS(standalone=False, axes=ax)
 
 # === Step 5: Draw ellipses ===
-for u, v, major, minor, angle in ellipses:
+for i, (u, v, major, minor, angle) in enumerate(ellipses):
     ellipse = Ellipse(xy=(u, v), width=major, height=minor, angle=angle,
-                      edgecolor='black', facecolor='none', linewidth=0.5)
+                      edgecolor='black', facecolor='none', linewidth=0.5,
+                      label=os.path.basename(xlsx_path) if i == 0 else None)
     ax.add_patch(ellipse)
+
+# === Draw point ===
+#scatter = ax.scatter(u_values, v_values, color='black', s=5, alpha=0.7, label=os.path.basename(csv_path))
+
+# === Function to check whether a point lies inside an ellipse ===
+def is_point_in_ellipse(x, y, cx, cy, major, minor, angle_deg):
+    angle = np.radians(angle_deg)
+    cos_a = np.cos(angle)
+    sin_a = np.sin(angle)
+    
+    dx = x - cx
+    dy = y - cy
+
+    # Rotate the coordinates
+    x_rot = dx * cos_a + dy * sin_a
+    y_rot = -dx * sin_a + dy * cos_a
+
+    # Use the standard ellipse equation
+    return (x_rot / (major / 2))**2 + (y_rot / (minor / 2))**2 <= 1
+
+# === Classify each point as PASS / FAIL ===
+pass_x, pass_y, fail_x, fail_y = [], [], [], []
+
+for x, y in zip(u_values, v_values):
+    if any(is_point_in_ellipse(x, y, u, v, major, minor, angle) for (u, v, major, minor, angle) in ellipses):
+        pass_x.append(x)
+        pass_y.append(y)
+    else:
+        fail_x.append(x)
+        fail_y.append(y)
+
+# === Plot the points ===
+scatter_pass = ax.scatter(pass_x, pass_y, color='green', s=20, alpha=0.7, label="PASS")
+scatter_fail = ax.scatter(fail_x, fail_y, color='red', s=20, alpha=0.7, label="FAIL")
+
+# === Tag each point with PASS / FAIL and add the result to the original DataFrame ===
+results = []
+for x, y in zip(u_values, v_values):
+    if any(is_point_in_ellipse(x, y, u, v, major, minor, angle) for (u, v, major, minor, angle) in ellipses):
+        results.append("PASS")
+    else:
+        results.append("FAIL")
+
+df["Result"] = results
+
+# === Output result CSV ===
+result_csv_path = os.path.splitext(csv_path)[0] + "_result.csv"
+df.to_csv(result_csv_path, index=False)
+
+# === Define legend ===
+def make_ellipse_legend(legend, orig_handle, xdescent, ydescent, width, height, fontsize):
+    return Ellipse((width / 2, height / 2), width=10, height=5, edgecolor='black', facecolor='none', linewidth=1)
+
+handles, labels = ax.get_legend_handles_labels()
+by_label = dict(zip(labels, handles))
+ax.legend(by_label.values(), by_label.keys(), loc='upper right', fontsize=9,
+          handler_map={Ellipse: HandlerPatch(patch_func=make_ellipse_legend)})
 
 plt.axis([0, 0.7, 0, 0.7])
 plt.xlabel("u′")
